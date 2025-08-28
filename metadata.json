@@ -1,0 +1,5 @@
+{
+  "name": "Billionaire Tycoon: A Text Adventure",
+  "description": "A dynamic text adventure game where you act as a billionaire, making strategic decisions to buy, sell, and manage a portfolio of real-world companies, powered by the Gemini API.",
+  "requestFramePermissions": []
+}
