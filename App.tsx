@@ -58,195 +58,183 @@ function App() {
     }
   }, [setGameState, gameState.holdingCompany]);
 
-  const handleAction = useCallback(async (action: string) => {
+  // FIX: Moved handleBuyShares before handleAction because handleAction depends on it.
+  const handleBuyShares = useCallback((companyName: string, sharesToBuy: number, sharePrice: number, totalShares: number) => {
+    setIsLoading(true);
+    setError(null);
+    setTimeout(() => {
+        try {
+            const response = buyShares(gameState, companyName, sharesToBuy, sharePrice, totalShares);
+            processApiResponse(response);
+        } catch (e) {
+            const errorMessage = e instanceof Error ? e.message : "An unknown error occurred.";
+            setError(errorMessage);
+            setGameState(prevState => ({
+                ...prevState,
+                gameLog: [...prevState.gameLog, `Purchase Error: ${errorMessage}`]
+            }));
+        } finally {
+            setIsLoading(false);
+        }
+    }, 50);
+  }, [gameState, processApiResponse, setGameState]);
+
+  const handleAction = useCallback((action: string) => {
     setIsLoading(true);
     setError(null);
 
-    // --- Handle special client-side interactive actions FIRST ---
-    
-    // 1. Navigate to market
-    if (action.toLowerCase().includes('view opportunities on the market exchange')) {
-        setCurrentPage('market');
-        setIsLoading(false);
-        setGameState(prevState => ({
-            ...prevState,
-            gameLog: [...prevState.gameLog, "Navigated to Market Exchange."]
-        }));
-        return;
-    }
-    
-    // 2. Increase stake in an owned company (robust parser)
-    if (action.toLowerCase().startsWith('increase stake in')) {
-        const prefix = 'increase stake in ';
-        const remainingAction = action.substring(prefix.length);
-
-        const allHoldings = [
-            ...gameState.portfolio,
-            ...(gameState.holdingCompany?.subsidiaries ?? [])
-        ];
+    // Use a short timeout to allow the UI to update to the loading state
+    // before the synchronous (and very fast) logic runs.
+    setTimeout(() => {
+        // --- Handle special client-side interactive actions FIRST ---
         
-        let companyInAction: Company | null = null;
+        // 1. Navigate to market
+        if (action.toLowerCase().includes('view opportunities on the market exchange')) {
+            setCurrentPage('market');
+            setGameState(prevState => ({
+                ...prevState,
+                gameLog: [...prevState.gameLog, "Navigated to Market Exchange."]
+            }));
+            setIsLoading(false);
+            return;
+        }
         
-        const sortedHoldings = [...allHoldings].sort((a, b) => b.name.length - a.name.length);
+        // 2. Increase stake in an owned company (robust parser)
+        if (action.toLowerCase().startsWith('increase stake in')) {
+            const prefix = 'increase stake in ';
+            const remainingAction = action.substring(prefix.length);
 
-        // Prepare a cleaned-up version of the action string for robust matching
-        const cleanRemainingAction = remainingAction
-            .toLowerCase()
-            .replace(/[.,'&]/g, '') // Remove punctuation that might differ
-            .trim();
-
-        for (const company of sortedHoldings) {
-            const fullName = company.name.toLowerCase();
+            const allHoldings = [
+                ...gameState.portfolio,
+                ...(gameState.holdingCompany?.subsidiaries ?? [])
+            ];
             
-            // Create a simpler "base name" without common corporate suffixes AND punctuation.
-            const baseName = fullName
-                .replace(/[.,'&]/g, '') // Remove punctuation first
-                .replace(/\s+(inc|corp|corporation|co|company)\s*$/, '') // Remove suffixes
-                .trim();
-            
-            const cleanFullName = fullName.replace(/[.,'&]/g, '').trim();
+            let companyInAction: Company | null = null;
+            const sortedHoldings = [...allHoldings].sort((a, b) => b.name.length - a.name.length);
+            const cleanRemainingAction = remainingAction.toLowerCase().replace(/[.,'&]/g, '').trim();
 
-            // Check if the cleaned action starts with the cleaned full name OR the simpler base name.
-            if (cleanRemainingAction.startsWith(cleanFullName) || (baseName.length > 2 && cleanRemainingAction.startsWith(baseName))) {
-                companyInAction = company;
-                break; // Found our match.
+            for (const company of sortedHoldings) {
+                const fullName = company.name.toLowerCase();
+                const baseName = fullName.replace(/[.,'&]/g, '').replace(/\s+(inc|corp|corporation|co|company)\s*$/, '').trim();
+                const cleanFullName = fullName.replace(/[.,'&]/g, '').trim();
+
+                if (cleanRemainingAction.startsWith(cleanFullName) || (baseName.length > 2 && cleanRemainingAction.startsWith(baseName))) {
+                    companyInAction = company;
+                    break;
+                }
             }
-        }
 
-        if (!companyInAction) {
-            setError(`Error: Could not parse company name from the action: "${action}". The AI may have used a name that doesn't match your portfolio. Please try another move.`);
-            setIsLoading(false);
-            return;
-        }
-        
-        const company = companyInAction;
-
-        const sharesStr = window.prompt(`How many shares of ${company.name} do you want to buy?\n\nCurrent Price: $${company.sharePrice.toLocaleString()}/share\nYour Cash: $${gameState.cash.toLocaleString()}`);
-        if (sharesStr === null) { // User cancelled
-            setIsLoading(false);
-            return;
-        }
-
-        const sharesToBuy = parseInt(sharesStr.replace(/,/g, ''), 10);
-        if (isNaN(sharesToBuy) || sharesToBuy <= 0) {
-            setError("Invalid number of shares entered.");
-            setIsLoading(false);
-            return;
-        }
-
-        const totalCost = sharesToBuy * company.sharePrice;
-        if (totalCost > gameState.cash) {
-            alert("Insufficient funds for this purchase.");
-            setIsLoading(false);
-            return;
-        }
-        
-        await handleBuyShares(company.name, sharesToBuy, company.sharePrice, company.totalShares);
-        return;
-    }
-
-    // 3. Restructure a subsidiary
-    if (action.toLowerCase().startsWith('restructure')) {
-        // Regex to capture the company name robustly
-        const match = action.match(/Restructure (.*?) as a subsidiary of/);
-        const companyName = match ? match[1].trim() : null;
-
-        if (companyName && gameState.holdingCompany) {
-            const currentHoldingCoName = gameState.holdingCompany.name;
-            const newName = window.prompt("You are absorbing a new company. You can rename your parent corporation to reflect its new status, or keep the current name.", currentHoldingCoName);
+            if (!companyInAction) {
+                setError(`Error: Could not parse company name from the action: "${action}". Please try another move.`);
+                setIsLoading(false);
+                return;
+            }
             
-            if (newName === null) { // User clicked cancel
+            const company = companyInAction;
+            const sharesStr = window.prompt(`How many shares of ${company.name} do you want to buy?\n\nCurrent Price: $${company.sharePrice.toLocaleString()}/share\nYour Cash: $${gameState.cash.toLocaleString()}`);
+            if (sharesStr === null) { setIsLoading(false); return; }
+
+            const sharesToBuy = parseInt(sharesStr.replace(/,/g, ''), 10);
+            if (isNaN(sharesToBuy) || sharesToBuy <= 0) {
+                setError("Invalid number of shares entered.");
                 setIsLoading(false);
                 return;
             }
 
-            const finalNewName = newName.trim() && newName.trim() !== currentHoldingCoName ? newName.trim() : undefined;
-            try {
-                const response = await restructureSubsidiary(gameState, companyName, finalNewName);
-                processApiResponse(response);
-            } catch (e) {
-                const errorMessage = e instanceof Error ? e.message : "An unknown error occurred.";
-                setError(errorMessage);
-            } finally {
+            const totalCost = sharesToBuy * company.sharePrice;
+            if (totalCost > gameState.cash) {
+                alert("Insufficient funds for this purchase.");
                 setIsLoading(false);
+                return;
+            }
+            
+            handleBuyShares(company.name, sharesToBuy, company.sharePrice, company.totalShares);
+            return;
+        }
+
+        // 3. Restructure a subsidiary
+        if (action.toLowerCase().startsWith('restructure')) {
+            const match = action.match(/Restructure (.*?) as a subsidiary of/);
+            const companyName = match ? match[1].trim() : null;
+
+            if (companyName && gameState.holdingCompany) {
+                const currentHoldingCoName = gameState.holdingCompany.name;
+                const newName = window.prompt("You are absorbing a new company. You can rename your parent corporation to reflect its new status, or keep the current name.", currentHoldingCoName);
+                
+                if (newName === null) { setIsLoading(false); return; }
+
+                const finalNewName = newName.trim() && newName.trim() !== currentHoldingCoName ? newName.trim() : undefined;
+                try {
+                    const response = restructureSubsidiary(gameState, companyName, finalNewName);
+                    processApiResponse(response);
+                } catch (e) {
+                    const errorMessage = e instanceof Error ? e.message : "An unknown error occurred.";
+                    setError(errorMessage);
+                } finally {
+                    setIsLoading(false);
+                }
+                return;
+            }
+        } 
+
+        // 4. Establish a holding company
+        if (action.toLowerCase().startsWith('establish a parent corporation')) {
+            const name = window.prompt("Name your new parent corporation:", "Apex Global Enterprises");
+            if (name && name.trim()) {
+                try {
+                    const response = establishHoldingCompany(gameState, name.trim());
+                    processApiResponse(response);
+                } catch (e) {
+                    const errorMessage = e instanceof Error ? e.message : "An unknown error occurred.";
+                    setError(errorMessage);
+                } finally {
+                    setIsLoading(false);
+                }
+            } else {
+                setIsLoading(false); // User cancelled
             }
             return;
         }
-    } 
-
-    // 4. Establish a holding company
-    if (action.toLowerCase().startsWith('establish a parent corporation')) {
-        const name = window.prompt("Name your new parent corporation:", "Apex Global Enterprises");
-        if (name && name.trim()) {
-            try {
-                const response = await establishHoldingCompany(gameState, name.trim());
-                processApiResponse(response);
-            } catch (e) {
-                const errorMessage = e instanceof Error ? e.message : "An unknown error occurred.";
-                setError(errorMessage);
-            } finally {
-                setIsLoading(false);
-            }
-        } else {
-            setIsLoading(false); // User cancelled
+        
+        // --- If no special action, proceed with generic simulation call ---
+        try {
+          const response = getNextStep(gameState, action);
+          processApiResponse(response);
+        } catch (e) {
+          const errorMessage = e instanceof Error ? e.message : "An unknown error occurred.";
+          setError(errorMessage);
+          setGameState(prevState => ({
+              ...prevState,
+              gameLog: [...prevState.gameLog, `Error: ${errorMessage}`]
+          }));
+        } finally {
+          setIsLoading(false);
         }
-        return;
-    }
-    
-    // --- If no special action, proceed with generic AI call ---
-    try {
-      const response = await getNextStep(gameState, action);
-      processApiResponse(response);
-    } catch (e) {
-      const errorMessage = e instanceof Error ? e.message : "An unknown error occurred.";
-      setError(errorMessage);
-      setGameState(prevState => ({
-          ...prevState,
-          gameLog: [...prevState.gameLog, `Error: ${errorMessage}`]
-      }));
-    } finally {
-      setIsLoading(false);
-    }
-  }, [gameState, processApiResponse, setGameState]);
+    }, 50); // 50ms timeout
+  }, [gameState, processApiResponse, setGameState, handleBuyShares]);
 
-  const handleBuyShares = useCallback(async (companyName: string, sharesToBuy: number, sharePrice: number, totalShares: number) => {
+  const handleSellShares = useCallback((companyName: string, sharesToSell: number) => {
     setIsLoading(true);
     setError(null);
-    try {
-        const response = await buyShares(gameState, companyName, sharesToBuy, sharePrice, totalShares);
-        processApiResponse(response);
-    } catch (e) {
-        const errorMessage = e instanceof Error ? e.message : "An unknown error occurred.";
-        setError(errorMessage);
-        setGameState(prevState => ({
-            ...prevState,
-            gameLog: [...prevState.gameLog, `Purchase Error: ${errorMessage}`]
-        }));
-    } finally {
-        setIsLoading(false);
-    }
-  }, [gameState, processApiResponse, setGameState]);
-  
-  const handleSellShares = useCallback(async (companyName: string, sharesToSell: number) => {
-    setIsLoading(true);
-    setError(null);
-    try {
-        const response = await sellShares(gameState, companyName, sharesToSell);
-        processApiResponse(response);
-    } catch (e) {
-        const errorMessage = e instanceof Error ? e.message : "An unknown error occurred.";
-        setError(errorMessage);
-        setGameState(prevState => ({
-            ...prevState,
-            gameLog: [...prevState.gameLog, `Sale Error: ${errorMessage}`]
-        }));
-    } finally {
-        setIsLoading(false);
-    }
+     setTimeout(() => {
+        try {
+            const response = sellShares(gameState, companyName, sharesToSell);
+            processApiResponse(response);
+        } catch (e) {
+            const errorMessage = e instanceof Error ? e.message : "An unknown error occurred.";
+            setError(errorMessage);
+            setGameState(prevState => ({
+                ...prevState,
+                gameLog: [...prevState.gameLog, `Sale Error: ${errorMessage}`]
+            }));
+        } finally {
+            setIsLoading(false);
+        }
+    }, 50);
   }, [gameState, processApiResponse, setGameState]);
 
   const handleCompanyCreation = (name: string) => {
-    // This is a client-side setup, the API call will happen via a subsequent action
+    // This is a client-side setup
     const cost = 500_000_000;
     const cashAfterFee = INITIAL_GAME_STATE.cash - cost;
 
@@ -274,8 +262,10 @@ function App() {
   };
 
   const handleReset = () => {
-    resetGame();
-    setCurrentPage('game');
+    if(window.confirm("Are you sure you want to reset the game? All progress will be lost.")) {
+      resetGame();
+      setCurrentPage('game');
+    }
   }
 
   // Show setup screen only for brand new games.
